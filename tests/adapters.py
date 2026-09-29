@@ -12,11 +12,19 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import BinaryIO
 
+import sys
+
 import numpy as np
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from pa1 import attention, checkpoint, data, layers, model, nn_utils, optim, rope  # noqa: E402
 
 
 def run_load_token_array(path: str | Path) -> np.memmap:
@@ -30,7 +38,7 @@ def run_load_token_array(path: str | Path) -> np.memmap:
     Returns:
         A one-dimensional, read-only memory map of little-endian uint16 IDs.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return data.load_token_array(path)
 
 
 def run_get_batch(
@@ -50,7 +58,7 @@ def run_get_batch(
     ``[batch_size, sequence_length]``. The adapter should only forward arguments
     to the student's batching function.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return data.get_batch(dataset, batch_size, sequence_length, device, generator)
 
 
 def run_linear(
@@ -69,7 +77,9 @@ def run_linear(
     Returns:
         The module output with shape ``[..., d_out]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    module = layers.Linear(d_in, d_out, device=weights.device, dtype=weights.dtype)
+    module.load_state_dict({"weight": weights})
+    return module(in_features)
 
 
 def run_embedding(
@@ -87,7 +97,9 @@ def run_embedding(
     Returns:
         Embedded token vectors with shape ``[*token_ids.shape, d_model]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    module = layers.Embedding(vocab_size, d_model, device=weights.device, dtype=weights.dtype)
+    module.load_state_dict({"weight": weights})
+    return module(token_ids)
 
 
 def run_rmsnorm(
@@ -105,7 +117,9 @@ def run_rmsnorm(
     Returns:
         A tensor with the same shape and floating dtype as ``in_features``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    module = layers.RMSNorm(d_model, norm_eps, device=weights.device, dtype=weights.dtype)
+    module.load_state_dict({"weight": weights})
+    return module(in_features)
 
 
 def run_silu(in_features: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
@@ -114,7 +128,7 @@ def run_silu(in_features: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
     The adapter must call the student function rather than write the sigmoid
     formula itself. Return a tensor with the same shape as ``in_features``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return layers.silu(in_features)
 
 
 def run_swiglu(
@@ -135,7 +149,9 @@ def run_swiglu(
     Returns:
         A tensor with shape ``[..., d_model]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    module = layers.SwiGLU(d_model, d_ff, device=gate_weight.device, dtype=gate_weight.dtype)
+    module.load_state_dict({"gate.weight": gate_weight, "up.weight": up_weight, "down.weight": down_weight})
+    return module(in_features)
 
 
 def run_rope(
@@ -156,7 +172,8 @@ def run_rope(
     Returns:
         The rotated tensor with unchanged shape and floating dtype.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    module = rope.RotaryPositionalEmbedding(rope_theta, head_dim, context_length, device=in_query_or_key.device)
+    return module(in_query_or_key, token_positions)
 
 
 def run_softmax(
@@ -167,7 +184,7 @@ def run_softmax(
     ``dim`` may be positive or negative. The adapter simply forwards the tensor
     and dimension and returns an output of the same shape.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return attention.softmax(in_features, dim)
 
 
 def run_scaled_dot_product_attention(
@@ -187,7 +204,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Attention values with shape ``[..., queries, d_v]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return attention.scaled_dot_product_attention(queries, keys, values, mask)
 
 
 def run_grouped_query_self_attention(
@@ -217,7 +234,24 @@ def run_grouped_query_self_attention(
     Returns:
         Attention output with shape ``[batch, sequence, d_model]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    module = attention.GroupedQuerySelfAttention(
+        d_model,
+        n_q_heads,
+        n_kv_heads,
+        context_length,
+        rope_theta,
+        device=q_proj_weight.device,
+        dtype=q_proj_weight.dtype,
+    )
+    module.load_state_dict(
+        {
+            "q_proj.weight": q_proj_weight,
+            "k_proj.weight": k_proj_weight,
+            "v_proj.weight": v_proj_weight,
+            "out_proj.weight": output_proj_weight,
+        }
+    )
+    return module(in_features, token_positions=token_positions)
 
 
 def run_transformer_block(
@@ -244,7 +278,21 @@ def run_transformer_block(
     Returns:
         Block output with shape ``[batch, sequence, d_model]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    reference = next(iter(weights.values()))
+    block = model.TransformerBlock(
+        d_model,
+        n_q_heads,
+        n_kv_heads,
+        d_ff,
+        context_length,
+        rope_theta,
+        norm_eps,
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    # The student state-dict names match the canonical fixture names.
+    block.load_state_dict(weights)
+    return block(in_features, token_positions=token_positions)
 
 
 def run_transformer_lm(
@@ -272,7 +320,22 @@ def run_transformer_lm(
     Returns:
         Unnormalized logits with shape ``[batch, sequence, vocab_size]``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    reference = next(iter(weights.values()))
+    lm = model.TransformerLM(
+        vocab_size,
+        context_length,
+        d_model,
+        num_layers,
+        n_q_heads,
+        n_kv_heads,
+        d_ff,
+        rope_theta,
+        norm_eps,
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    lm.load_state_dict(weights)
+    return lm(token_ids, token_positions=token_positions)
 
 
 def get_transformer_lm(
@@ -296,7 +359,19 @@ def get_transformer_lm(
     real ``torch.nn.Module`` so tests can inspect parameters and gradients; do
     not wrap or reimplement its forward computation in the adapter.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return model.TransformerLM(
+        vocab_size,
+        context_length,
+        d_model,
+        num_layers,
+        n_q_heads,
+        n_kv_heads,
+        d_ff,
+        rope_theta,
+        norm_eps,
+        device=device,
+        dtype=dtype,
+    )
 
 
 def run_cross_entropy(
@@ -308,7 +383,7 @@ def run_cross_entropy(
     IDs for the final vocabulary axis. The adapter calls the student's loss
     function; it must not delegate to PyTorch cross-entropy here.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return nn_utils.cross_entropy(logits, targets)
 
 
 def get_adamw_cls() -> type[torch.optim.Optimizer]:
@@ -318,7 +393,7 @@ def get_adamw_cls() -> type[torch.optim.Optimizer]:
     expose serializable optimizer state, and implement the assignment equations
     without wrapping ``torch.optim.AdamW``.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return optim.AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -334,7 +409,9 @@ def run_get_lr_cosine_schedule(
     zero to ``learning_rate_max``, decays to ``learning_rate_min`` by
     ``cosine_steps``, then remains at that floor. Return a Python float.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return optim.get_lr_cosine_schedule(
+        step, learning_rate_max, learning_rate_min, warmup_steps, cosine_steps
+    )
 
 
 def run_gradient_clipping(
@@ -348,7 +425,7 @@ def run_gradient_clipping(
     Returns:
         The global L2 norm before clipping as a Python float.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return nn_utils.gradient_clipping(parameters, max_l2_norm)
 
 
 def run_save_checkpoint(
@@ -364,7 +441,7 @@ def run_save_checkpoint(
     ``out`` may be a path or a writable binary stream. The adapter should only
     call the student's checkpoint function; it must not assemble the payload.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    checkpoint.save_checkpoint(model, optimizer, next_step, train_generator, val_generator, out)
 
 
 def run_load_checkpoint(
@@ -379,4 +456,4 @@ def run_load_checkpoint(
     ``src`` may be a path or a readable binary stream. The adapter should only
     call the student's loader; state restoration belongs in that function.
     """
-    raise NotImplementedError("TODO: connect your implementation")
+    return checkpoint.load_checkpoint(src, model, optimizer, train_generator, val_generator)

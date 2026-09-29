@@ -77,3 +77,45 @@ The script prints the ordinary public-test results and creates
 upload it to the LMS. The archive contains only `src/`, `tests/adapters.py`,
 `REPORT.md`, `report_assets/`, and `final_model.pt`; downloaded data, caches,
 and full training checkpoints are excluded.
+
+## Implementation and command-line tools
+
+The implementation lives in `src/pa1/`; `tests/adapters.py` only imports it.
+
+| Module | Contents |
+|---|---|
+| `layers.py` | `Linear`, `Embedding`, `RMSNorm`, `silu`, `SwiGLU` |
+| `rope.py` | adjacent-pair `RotaryPositionalEmbedding` |
+| `attention.py` | `softmax`, `scaled_dot_product_attention`, `GroupedQuerySelfAttention` |
+| `model.py` | `TransformerBlock`, `TransformerLM`, `ModelConfig` |
+| `nn_utils.py` / `optim.py` | `cross_entropy`, `gradient_clipping` / `AdamW`, `get_lr_cosine_schedule` |
+| `data.py` / `checkpoint.py` | memmap loading, batch sampling / checkpoints, fp16 export |
+| `precision.py` / `distributed.py` | fp16 mixed-precision policy / 2-GPU data parallelism |
+| `generation.py` / `evaluation.py` | temperature + top-p decoding / validation and standardized eval |
+
+**Mixed precision.** With `--precision fp16` (the default on CUDA), parameters, gradients,
+and AdamW state stay float32; `torch.autocast` runs every matmul in float16; RMSNorm, RoPE,
+the attention softmax, and cross-entropy compute in float32; the residual stream stays float32;
+and `torch.amp.GradScaler` applies dynamic loss scaling (skipped overflow steps are logged).
+
+**Multi-GPU.** `torchrun --nproc_per_node=2` splits every microbatch across GPUs and averages
+gradients with one all-reduce per optimizer update (no `DistributedDataParallel`, which the
+assignment's `torch.nn` restriction rules out). All ranks sample identical batches and keep the
+shard for their rank, so a 2-GPU run sees exactly the data of a 1-GPU run with the same seeds.
+
+```bash
+# train (single GPU/CPU, or both Kaggle T4s); resumes automatically from <run-dir>/checkpoint.pt
+uv run python src/train.py --run-dir runs/debug --num-steps 1000
+uv run torchrun --standalone --nproc_per_node=2 src/train.py --run-dir runs/final \
+    --batch-size 32 --grad-accum 8 --time-limit-hours 11
+
+uv run python src/precision_check.py --out report_assets/precision_benchmark.json  # dtype audit + fp32/fp16 benchmark
+uv run python src/export_model.py --checkpoint runs/final/checkpoint.pt --out final_model.pt
+uv run python src/evaluate.py --model final_model.pt --out report_assets/final_eval.json
+uv run python src/generate.py --model final_model.pt --temperatures 0.7 1.0 --top-ps 0.9 1.0 --num-samples 3
+uv run python src/plot_metrics.py runs/final --out report_assets/final_run.png
+```
+
+Every tool supports `--help`. `notebooks/kaggle_pa1.ipynb` runs the whole pipeline on Kaggle
+(GPU T4 x2): environment setup, tests, precision check, overfit check, parallel ablations,
+the final 2-GPU run with resume support, and post-processing.

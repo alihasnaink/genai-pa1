@@ -14,3 +14,5 @@ submission.zip
 *.pth
 *.ckpt
 *.bin
+__pycache__/
+_snapshots/
