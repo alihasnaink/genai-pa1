@@ -69,7 +69,7 @@ def parity(model: TransformerLM, tokens: torch.Tensor, device: torch.device) -> 
         with autocast_context(precision, device):
             loss = cross_entropy(model(tokens[:, :-1]), tokens[:, 1:])
         loss.backward()
-        results[f"loss_{precision}"] = float(loss)
+        results[f"loss_{precision}"] = float(loss.detach())
         gradients[precision] = torch.cat([p.grad.reshape(-1).float() for p in model.parameters()])
     model.zero_grad(set_to_none=True)
     results["abs_loss_difference"] = abs(results["loss_fp32"] - results["loss_fp16"])

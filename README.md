@@ -107,7 +107,7 @@ shard for their rank, so a 2-GPU run sees exactly the data of a 1-GPU run with t
 # train (single GPU/CPU, or both Kaggle T4s); resumes automatically from <run-dir>/checkpoint.pt
 uv run python src/train.py --run-dir runs/debug --num-steps 1000
 uv run torchrun --standalone --nproc_per_node=2 src/train.py --run-dir runs/final \
-    --batch-size 32 --grad-accum 8 --time-limit-hours 11
+    --batch-size 64 --grad-accum 4 --compile --time-limit-hours 11
 
 uv run python src/precision_check.py --out report_assets/precision_benchmark.json  # dtype audit + fp32/fp16 benchmark
 uv run python src/export_model.py --checkpoint runs/final/checkpoint.pt --out final_model.pt
