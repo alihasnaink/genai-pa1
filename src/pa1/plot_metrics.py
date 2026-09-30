@@ -13,11 +13,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 
-import matplotlib
+# Jupyter kernels (e.g. Kaggle) export MPLBACKEND=module://matplotlib_inline...,
+# which subprocesses inherit and matplotlib validates at import time; this CLI
+# only writes files, so force the headless backend before importing matplotlib.
+os.environ["MPLBACKEND"] = "Agg"
 
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 # Fixed categorical order (never cycled); text stays in neutral ink.
